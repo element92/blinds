@@ -1,4 +1,4 @@
--- file : application.lua
+-- file : mq.lua
 local module = {}  
 m = nil
 

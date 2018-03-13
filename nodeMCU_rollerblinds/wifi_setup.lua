@@ -1,4 +1,4 @@
--- file: setup.lua
+-- file: wifi_setup.lua
 local module = {}
 
 local function wifi_wait_ip()  
