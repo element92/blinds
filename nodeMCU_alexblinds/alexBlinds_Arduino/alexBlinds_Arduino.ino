@@ -4,6 +4,9 @@
 // - Write a method for converting strings to byte messages, and vice versa
 // - Save parameters (e.g. motor location) to memory and load them on restart
 // - Make sure target_position is published to both on button press and when changed over MQTT
+// - Add something to detect millis() wrap-around (every couple of days?) and correct time checking accordingly
+// - Add a wear-levelling algorithm to where currentPosition is stored in EEPROM
+
 // PubSubClient tutorial
 // https://techtutorialsx.com/2017/04/09/esp8266-connecting-to-mqtt-broker/
 
@@ -11,6 +14,10 @@
 #include <Stepper.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <EEPROM.h>
+
+// Current EEPROM address
+int addr = 0;
 
 // Wi-Fi parameters
 const char* ssid = "AccessibleBeige";
@@ -62,10 +69,33 @@ int lastButtonState = HIGH;
 void setup() {
   // initialize the serial port:
   Serial.begin(115200);
-
+  Serial.println();
+  // initialize the EEPROM
+  EEPROM.begin(512);
+  
   // Set up the LED on the ESP chip for blinking
   pinMode(ledPin2, OUTPUT);
-  
+
+  // Load from EEPROM the address of (also in EEPROM) the currentPosition variable
+  // The program automatically moves around where currentPosition is stored
+  // to prevent writing to the same part of memory over and over, wearing it out
+  // (the ESP8266 EEPROM apparently has a life of ~100,000 cycles).
+  EEPROM.get(0, addr);
+  // If the read address is out of range, reset to minimum value.
+  if (addr >= (512 - sizeof(int) - 1)) {
+    addr = 0 + sizeof(int);
+    Serial.print("ERROR: current memory address out of range.  Resetting.");
+    EEPROM.put(0, addr);
+  }
+  Serial.print("Current EEPROM address: ");
+  Serial.println(addr);
+
+  // Read currentPosition from memory
+  EEPROM.get(addr, currentPosition);
+  targetPosition = currentPosition;
+  Serial.print("(read from memory) currentPosition = ");
+  Serial.println(currentPosition);
+
   // Connect to Wi-Fi
   setup_wifi();
 
@@ -78,7 +108,6 @@ void setup() {
 
   // General debugging printouts
   Serial.println("Waiting 2 seconds");
-  targetPosition = 0;
   delay(2000);
   Serial.print("Current position: ");
   Serial.println(currentPosition);
@@ -128,6 +157,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.println(x);
   // Set the target position to the input
   targetPosition = x;
+  Serial.print("MQTT COMMAND.  Go to position: ");
+  Serial.println(targetPosition);
+  // Publish the new targetPosition to MQTT
+  mqtt_status = client.publish(topic_position, static_cast<char*>(static_cast<void*>(&targetPosition)));
 }
 
 void reconnect() {
@@ -213,6 +246,9 @@ void loop() {
         digitalWrite(ledPin2, LOW);
         // Set the position of the blinds at random
         targetPosition = (int) random(0,200);
+        // Write to EEPROM
+        EEPROM.put(addr, targetPosition);
+        EEPROM.commit();
         Serial.print("BUTTON PRESS.  Go to position: ");
         Serial.println(targetPosition);
         // Publish the new targetPosition to MQTT
@@ -238,8 +274,11 @@ void loop() {
   stepsToMove = targetPosition - currentPosition;
 
   if (stepsToMove != 0) {
+    // Move a single step in the required direction
     move(stepsToMove / abs(stepsToMove));
     currentPosition += (stepsToMove / abs(stepsToMove));
+    // Print to terminal
+    Serial.print("currentPosition: ");
     Serial.println(currentPosition);
   }
 }
