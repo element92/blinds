@@ -48,8 +48,11 @@ const int ledPin2 = D4;   // LED on the ESP8266 chip
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
 unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
-unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
 unsigned long lastHeartbeat = 0;  // the last time the heartbeat message was posted
+unsigned long lastEEPROMWrite = 0; // the last time the parameters were saved to EEPROM
+unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
+unsigned long EEPROMWriteFrequency = 1000; // the frequency to write to the EEPROM (if there are changes only) 
+unsigned long heartbeatFrequency = 60000; // the frequency to post a heartbeat message to MQTT
 
 // Initialize Wi-FI and MQTT
 WiFiClient espClient;
@@ -194,6 +197,18 @@ void move(int steps) {
     myStepper.step(dir);
     delay(1); // Gives the ESP8266 time to do its thing
   }
+}
+
+// General call that saves the various parameters of the program to EEPROM
+void saveToEEPROM() {
+  // INSERT CODE HERE TO INSERT TO EEPROM
+  Serial.println("Saving parameters to EEPROM (fake -- no code yet)");
+}
+
+// Loads parameters from the EEPROM 
+void loadFromEEPROM() {
+  // INSERT CODE HERE TO LOAD PARAMETERS FROM EEPROM
+  Serial.println("Loading parameters from EEPROM (fake -- no code yet)");
 }
 
 void loop() {
