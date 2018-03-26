@@ -9,14 +9,16 @@
 
 #include <EEPROM.h>
 
-// Memory class
-/* A fancy-pants way of storing a single value in EEPROM
- *  using a simple wear-levelling algorithm.
+// EEPROM_int class
+/* Stores a single int value in EEPROM by applying a 
+ *  wear-levelling algorithm.
+ *  
  *  public functions:
- *    retrieve()  Gets the value from EEPROM
+ *    get()  Returns the stored value
+ *    retrieve()  Retrieves the value from EEPROM. Should be called after initializing.
  *    save(int x) Saves x to EEPROM
 */
-class Memory {
+class EEPROM_int {
   private:
     int value;
     int blockSize = sizeof(int) + 1; // data type of 'value' + 1 for the dirty bit
@@ -27,11 +29,11 @@ class Memory {
     
   public:
     // Constructors
-    Memory() {
+    EEPROM_int() {
       // Default values
-      Memory(0x80, 0x1ff);
+      EEPROM_int (0x80, 0x1ff);
     }
-    Memory(int x1, int x2) {
+    EEPROM_int(int x1, int x2) {
       Serial.print("Initializing a block of EEPROM memory from (x1:x2): ");
       Serial.print(x1);
       Serial.print(":");
@@ -66,7 +68,6 @@ class Memory {
         dirtyBit = 1;
         value = 0;
         EEPROM.write(address, dirtyBit);
-        EEPROM.commit();
         EEPROM.put(address+1, value);
         EEPROM.commit();
       }
@@ -119,7 +120,6 @@ class Memory {
       // Save the data.
       value = x;
       EEPROM.write(address, dirtyBit);
-      EEPROM.commit();
       EEPROM.put(address + 1, x);
       EEPROM.commit();
       Serial.print(x);
@@ -131,7 +131,7 @@ class Memory {
 
 
 // Allocate some EEPROM for an int.
-myMemoryVal = Memory(0x70, 0x1fa);
+myMemoryVal = EEPROM_int(0x70, 0x1fa);
 
 
 void setup()
@@ -148,39 +148,6 @@ void setup()
   
   Serial.print("Default value on startup: ");
   Serial.println(myMemoryVal.get() );
-
-/*
-  
-  Serial.print("Default value of x on startup: ");
-  Serial.println(x);
-  Serial.print("Address starting location: ");
-  Serial.println(addr);
-  
-  // Reads values from the EEPROM
-  EEPROM.get(addr, x);
-  Serial.print("Value of x read from memory: ");
-  Serial.println(x);
-  
-  // Generates a random number
-  x = (int) random(0,200);
-  Serial.print("New value of x: ");
-  Serial.println(x);
-  
-  // Writes a random value to the EEPROM
-  Serial.print("Size of x: ");
-  Serial.println(sizeof(int));
-  Serial.println("Saving x to EEPROM");
-  EEPROM.put(addr, x);
-  addr += sizeof(int);
-  
-  Serial.print("New address location: ");
-  Serial.println(addr);
-  
-  // A commit command is necessary for the ESP8266
-  EEPROM.commit();
-
-*/
-
 }
 
 void loop()

@@ -2,22 +2,20 @@
 //
 // - Add heartbeat status update for MQTT that includes uptime
 // - Write a method for converting strings to byte messages, and vice versa
-// - Save parameters (e.g. motor location) to memory and load them on restart
 // - Make sure target_position is published to both on button press and when changed over MQTT
 // - Add something to detect millis() wrap-around (every couple of days?) and correct time checking accordingly
-// - Add a wear-levelling algorithm to where currentPosition is stored in EEPROM
 
 // PubSubClient tutorial
 // https://techtutorialsx.com/2017/04/09/esp8266-connecting-to-mqtt-broker/
 
-
+#include <Arduino.h>
 #include <Stepper.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
 
-// Current EEPROM address
-int addr = 0;
+#include "AlexButton.h"
+#include "EEPROM_int.h"
 
 // Wi-Fi parameters
 const char* ssid = "AccessibleBeige";
@@ -41,18 +39,24 @@ const int stepperRPM = 8;
 // Motor on NodeMCU pins D0, D1, D2, D3
 Stepper myStepper(stepsPerRevolution, D0, D1, D2, D3);
 
+// Initialize a new AlexButton 
+// connected to digital pin D5
+AlexButton button(D5);
+
+// Blinds status and mode parameters
+int operatingMode;  // -1 = startup/error
+                    //  0 = normal
+                    //  1 = calibration
+
 // Other parameters
-const int buttonPin = D5; // Push button
 const int ledPin1 = D0;   // LED on the NodeMCU board
 const int ledPin2 = D4;   // LED on the ESP8266 chip
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
-unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
 unsigned long lastHeartbeat = 0;  // the last time the heartbeat message was posted
 unsigned long lastEEPROMWrite = 0; // the last time the parameters were saved to EEPROM
-unsigned long debounceDelay = 50;    // the debounce time; increase if the output flickers
-unsigned long EEPROMWriteFrequency = 1000; // the frequency to write to the EEPROM (if there are changes only) 
-unsigned long heartbeatFrequency = 60000; // the frequency to post a heartbeat message to MQTT
+const int EEPROMWriteInterval = 5; // seconds between EEPROM writes (if there are changes only)
+
 
 // Initialize Wi-FI and MQTT
 WiFiClient espClient;
@@ -63,61 +67,76 @@ int value = 0;
 bool mqtt_status = false; // For recording publish status
 
 // Instantiate variables for monitoring and controlling status
-int currentPosition = 0; // Current position of the blinds
-int targetPosition = 0; // Desired position of the blinds
-int stepsToMove = 0;      // variable for holding how many steps to move the motor
-int buttonState = HIGH;         // variable for reading the pushbutton status
-int lastButtonState = HIGH;
+int targetPosition; // Desired position of the blinds
+int stepsToMove;      // variable for holding how many steps to move the motor
+int calDirection;   // -1 = go up
+                    //  0 = go nowhere
+                    //  1 = go down
+
+// Instantiate variable to be stored in EEPROM
+EEPROM_int currentPosition(0x00, 0x1ef); // The current position of the blinds
+                                         // e.g. number of motor steps from the top
+EEPROM_int maxPosition(0x1f0, 0x1ff); // The maximum allowed position of the blinds 
+                                // e.g. number of motor steps from the top
+                                // corresponding to full blinds extention
 
 void setup() {
   // initialize the serial port:
   Serial.begin(115200);
-  Serial.println();
-  // initialize the EEPROM
-  EEPROM.begin(512);
-  
-  // Set up the LED on the ESP chip for blinking
-  pinMode(ledPin2, OUTPUT);
-
-  // Load from EEPROM the address of (also in EEPROM) the currentPosition variable
-  // The program automatically moves around where currentPosition is stored
-  // to prevent writing to the same part of memory over and over, wearing it out
-  // (the ESP8266 EEPROM apparently has a life of ~100,000 cycles).
-  EEPROM.get(0, addr);
-  // If the read address is out of range, reset to minimum value.
-  if (addr >= (512 - sizeof(int) - 1)) {
-    addr = 0 + sizeof(int);
-    Serial.print("ERROR: current memory address out of range.  Resetting.");
-    EEPROM.put(0, addr);
-  }
-  Serial.print("Current EEPROM address: ");
-  Serial.println(addr);
-
-  // Read currentPosition from memory
-  EEPROM.get(addr, currentPosition);
-  targetPosition = currentPosition;
-  Serial.print("(read from memory) currentPosition = ");
-  Serial.println(currentPosition);
-
   // Connect to Wi-Fi
   setup_wifi();
+  // initialize the EEPROM
+  EEPROM.begin(512);
+  // Load values from EEPROM
+  currentPosition.retrieve();
+  maxPosition.retrieve();
+  // Give it some time to breathe
+  delay(500);
+  Serial.println();
+
+  Serial.println("---------------------");
+  Serial.println("Welcome to AlexBlinds");
+  Serial.println("---------------------");
+
+  // Put operatingMode into startup
+  operatingMode = -1;
+
+  // Set the calibration direction to 0 (go nowhere)
+  calDirection = 0;
+  
+  // Set up the LEDs and turn them off.
+  pinMode(ledPin1, OUTPUT);
+  pinMode(ledPin2, OUTPUT);
+  digitalWrite(ledPin1, HIGH);
+  digitalWrite(ledPin2, HIGH);
+
+  // Set targetPosition to currentPosition
+  stepsToMove = 0;
+  targetPosition = currentPosition.get();
+
+  // ONLY ENABLE ONCE, TO HARD-LOAD A MAX POSITION INTO EEPROM
+  // Set maxPosition
+  // RESPLACE WITH CALIBRATION ROUTINE
+  //maxPosition.set(200);
+  //maxPosition.save();
+  
+  // Print the current values loaded from memory
+  Serial.print("(read from memory) currentPosition = ");
+  Serial.println(currentPosition.get());
+  Serial.print("(read from memory) maxPosition = ");
+  Serial.println(maxPosition.get());
 
   // Set MQTT connections
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
   
-  // set the stepper speed:
+  // set the stepper motor speed:
   myStepper.setSpeed(stepperRPM);
 
-  // General debugging printouts
-  Serial.println("Waiting 2 seconds");
-  delay(2000);
-  Serial.print("Current position: ");
-  Serial.println(currentPosition);
-  Serial.print("Target position: ");
-  Serial.println(targetPosition);
-  Serial.print("Number of steps to move: ");
-  Serial.println(targetPosition - currentPosition);
+  // Time to breathe
+  delay(500);  
+  operatingMode = 0; // Normal mode
+  Serial.println("...Ready...");
 }
 
 void setup_wifi() {
@@ -147,12 +166,13 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.print(topic);
   Serial.print("] ");
   
-  // Alex's attempt to cast the byte array into an into an int
+  // Alex's attempt to cast the byte array into an int
   int x = 0;
   for (int i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
     // Byte-shifts from ASCII character mapping to 0-9
     // WARNING: Makes very big mistake if the string is not made up of 0-9 only!
+    // i.e. it can't handle negative numbers
     x = (x * 10) + ((int)payload[i] - (int)'0');
   }
   Serial.println();
@@ -199,18 +219,6 @@ void move(int steps) {
   }
 }
 
-// General call that saves the various parameters of the program to EEPROM
-void saveToEEPROM() {
-  // INSERT CODE HERE TO INSERT TO EEPROM
-  Serial.println("Saving parameters to EEPROM (fake -- no code yet)");
-}
-
-// Loads parameters from the EEPROM 
-void loadFromEEPROM() {
-  // INSERT CODE HERE TO LOAD PARAMETERS FROM EEPROM
-  Serial.println("Loading parameters from EEPROM (fake -- no code yet)");
-}
-
 void loop() {
 
   // MQTT CLIENT
@@ -223,77 +231,121 @@ void loop() {
   }
   client.loop();
 
+  // SCHEDULED TASKS
+  // ---------------
+  
   // Post a heartbeat message, if it's time to do so
   if ((millis() - lastHeartbeat) / 1000 > heartbeatInterval) {
+    Serial.println("...Heartbeat...");
     lastHeartbeat = millis();
     client.publish(topic_status, "still alive");
   }
-  
-  // BUTTON READ AND DEBOUNCING
-  // --------------------------
-  
-  // read the state of the switch into a local variable:
-  int reading = digitalRead(buttonPin);
 
-  // check to see if you just pressed the button
-  // (i.e. the input went from HIGH to LOW), and you've waited long enough
-  // since the last press to ignore any noise:
-
-  // If the switch changed, due to noise or pressing:
-  if (reading != lastButtonState) {
-    // reset the debouncing timer
-    lastDebounceTime = millis();
+  // Save currentPosition to EEPROM, if it's time to do so
+  if ((millis() - lastEEPROMWrite) / 1000 > EEPROMWriteInterval) {
+//    Serial.println("...EEPROM save attempt...");
+    lastEEPROMWrite = millis();
+    currentPosition.save();
   }
 
-  // If the debounce test passes, do something
-  if ((millis() - lastDebounceTime) > debounceDelay) {
-    // whatever the reading is at, it's been there for longer than the debounce
-    // delay, so take it as the actual current state:
-
-    // if the button state has changed:
-    if (reading != buttonState) {
-      buttonState = reading;
-
-      // BUTTON CONFIRMED PRESSED
-      // Pressing the button pulls the digital input LOW
-      if (buttonState == LOW) {
-        // Turn on the LED
-        digitalWrite(ledPin2, LOW);
-        // Set the position of the blinds at random
-        targetPosition = (int) random(0,200);
-        // Write to EEPROM
-        EEPROM.put(addr, targetPosition);
-        EEPROM.commit();
-        Serial.print("BUTTON PRESS.  Go to position: ");
-        Serial.println(targetPosition);
-        // Publish the new targetPosition to MQTT
-        mqtt_status = client.publish(topic_position, static_cast<char*>(static_cast<void*>(&targetPosition)));
-      }
-
-      // BUTTON CONFIRMED RELEASED
-      else if (buttonState == HIGH) {
-        // Turn off the LED
-        digitalWrite(ledPin2, HIGH);
-      }
+  // PUSH BUTTON
+  // -----------
+    // Do something if the button status has changed
+  if(button.update() == true) {
+    int x = button.status();
+    
+    // Short press.  Turn on LED 1.
+    if (x == 1) {
+      digitalWrite(ledPin1, LOW);
+      Serial.println("BUTTON: Short press");
+    }
+    
+    // Long press. Turn on LED 2.
+    else if (x == 2) {
+      digitalWrite(ledPin2, LOW);
+      Serial.println("BUTTON: Long press");
+    }
+    
+    // Short press release
+    // Lower the blinds to the bottom.  
+    // If they're already lowered, raise them instead.
+    // Turn off LEDs.
+    // If we're in calibration mode, do the calibration routine instead.
+    else if (x == -1) {
+      digitalWrite(ledPin1, HIGH);
+      digitalWrite(ledPin2, HIGH);
+      Serial.println("BUTTON: Short press release");
+      if (operatingMode == 0) { // Normal mode
+        if (currentPosition.get() < maxPosition.get() ){ // If blinds aren't fully down, go down
+          Serial.println("GOING DOWN");
+          targetPosition = maxPosition.get();
+        }
+        else { // If the blinds are already fully down, go up
+          Serial.println("GOING UP");
+          targetPosition = 0;
+        }
+      } // end "normal" operating mode
+      else if (operatingMode == 1) { // calibration mode
+        if (calDirection == 0) { // start calibration
+          calDirection = 1;
+        }
+        else if (calDirection == 1) { // record max position and reverse direction
+          maxPosition.set(currentPosition.get() );
+          calDirection = -1;
+        }
+        else { // shift the zero point to the new calibration and save
+          maxPosition.set(maxPosition.get() - currentPosition.get() );
+          maxPosition.save();
+          currentPosition.set(0);
+          currentPosition.save();
+          calDirection = 0;
+          targetPosition = 0;
+          operatingMode = 0;
+        }
+      } // end of "calibration" mode
+    } // end "short press"
+    
+    // Long press release.  Turn off LEDs and start calibration routine.
+    else if (x == -2) {
+      digitalWrite(ledPin1, HIGH);
+      digitalWrite(ledPin2, HIGH);
+      Serial.println("BUTTON: Long press release");
+      Serial.println("...CALIBRATING...");
+      // INSERT CALIBRATION ROUTINE
+      operatingMode = 1; // Put the device into calibration mode
+      calDirection = 1; // Start by calibrating in the down direction
+      // OVERRIDE - randomize the position
+      //Serial.println("...OVERRIDE: going to random position instead.");
+      // // Go to a random position between 0-200
+      //targetPosition = (int) random(0,maxPosition.get() );
+      //Serial.print("...MOVING to position ");
+      //Serial.println(targetPosition);
+     // // Publish the new targetPosition to MQTT
+     // mqtt_status = client.publish(topic_position, static_cast<char*>(static_cast<void*>(&targetPosition)));
     }
   }
 
-  // save the reading. Next time through the loop, it'll be the lastButtonState:
-  lastButtonState = reading;
+  // CALIBRATION ROUTINE
+  // -------------------
+  if (operatingMode == 1) {
+    // During calibration, advances one step at a time indefinitely,
+    // until the button is pressed again.
+    targetPosition = currentPosition.get() + calDirection;
+  }
 
   // THE REST
   // --------
   
   // Calculates how many steps are needed to move the motor into
   // the target position
-  stepsToMove = targetPosition - currentPosition;
+  stepsToMove = targetPosition - currentPosition.get();
 
   if (stepsToMove != 0) {
     // Move a single step in the required direction
     move(stepsToMove / abs(stepsToMove));
-    currentPosition += (stepsToMove / abs(stepsToMove));
+    currentPosition.set(currentPosition.get() + (stepsToMove / abs(stepsToMove)));
     // Print to terminal
     Serial.print("currentPosition: ");
-    Serial.println(currentPosition);
+    Serial.println(currentPosition.get());
   }
 }
