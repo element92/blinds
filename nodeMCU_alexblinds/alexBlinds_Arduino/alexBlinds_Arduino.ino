@@ -3,12 +3,12 @@
 // - Add heartbeat status update for MQTT that includes uptime
 // - Write a method for converting strings to byte messages, and vice versa
 // - Make sure target_position is published to both on button press and when changed over MQTT
-// - Add something to detect millis() wrap-around (every couple of days?) and correct time checking accordingly
 
 // PubSubClient tutorial
 // https://techtutorialsx.com/2017/04/09/esp8266-connecting-to-mqtt-broker/
 
 #include <Arduino.h>
+#include <string>
 #include <Stepper.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
@@ -160,30 +160,69 @@ void setup_wifi() {
   Serial.println(WiFi.localIP());
 }
 
-// Code for what happens if we receive something
+// Code for what happens if we receive something from MQTT
 void callback(char* topic, byte* payload, unsigned int length) {
+  // Convert the payload to a String to make it easier to handle.
+  // Also check if it's a number (i.e. all digits) while we're at it.
+  String value = "";
+  bool isNumber = true;
+  for (int i=0;i<length;i++) {
+      value += (char)payload[i];
+      if(isdigit((char)payload[i])==false) { isNumber = false; }
+  }
+
+  // Print the message to Serial
   Serial.print("Message arrived [");
   Serial.print(topic);
-  Serial.print("] ");
+  Serial.print("]: ");
+  Serial.println(value);
+
+  // Decide what to do with the message
+  // Topic: set
+  if(strcmp(topic, topic_set) == 0) {
+    Serial.println("Received MQTT message on topic_set");
+    if(isNumber) {
+      int inpNum = (int)value.toInt();
+      if(inpNum <= 100 && inpNum >= 0) {
+        Serial.println("Received a valid number. Moving the blinds");
+        targetPosition = pctToPosition(inpNum);
+      }
+      else {
+        Serial.println("Received an out-of-range number. Doing nothing.");
+      }
+    }
+    if(value == String("UP")) {
+      Serial.println("Received UP command");
+      targetPosition = pctToPosition(100);
+    }
+    else if(value == String("DOWN")) {
+      Serial.println("Received DOWN command");
+      targetPosition = pctToPosition(0);
+    }
+    else if(value == String("STOP")) {
+      Serial.println("Received STOP command");
+      targetPosition = currentPosition.get();
+    }
+  }
   
   // Alex's attempt to cast the byte array into an int
-  int x = 0;
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
+//  int x = 0;
+//  for (int i = 0; i < length; i++) {
+//    Serial.print((char)payload[i]);
     // Byte-shifts from ASCII character mapping to 0-9
     // WARNING: Makes very big mistake if the string is not made up of 0-9 only!
     // i.e. it can't handle negative numbers
-    x = (x * 10) + ((int)payload[i] - (int)'0');
-  }
-  Serial.println();
-  Serial.print("Integer version of the input: ");
-  Serial.println(x);
+//    x = (x * 10) + ((int)payload[i] - (int)'0');
+//  }
+//  Serial.println();
+//  Serial.print("Integer version of the input: ");
+//  Serial.println(x);
   // Set the target position to the input
-  targetPosition = x;
-  Serial.print("MQTT COMMAND.  Go to position: ");
-  Serial.println(targetPosition);
+//  targetPosition = x;
+//  Serial.print("MQTT COMMAND.  Go to position: ");
+//  Serial.println(targetPosition);
   // Publish the new targetPosition to MQTT
-  mqtt_status = client.publish(topic_position, static_cast<char*>(static_cast<void*>(&targetPosition)));
+//  mqtt_status = client.publish(topic_position, static_cast<char*>(static_cast<void*>(&targetPosition)));
 }
 
 void reconnect() {
@@ -219,6 +258,12 @@ void move(int steps) {
   }
 }
 
+// Converts percentage open [0..100] into the step-position, based on the 
+// calibration
+int pctToPosition(int pct) {
+  return (int) (maxPosition.get() * (pct/100.0) );
+}
+
 void loop() {
 
   // MQTT CLIENT
@@ -235,14 +280,14 @@ void loop() {
   // ---------------
   
   // Post a heartbeat message, if it's time to do so
-  if ((millis() - lastHeartbeat) / 1000 > heartbeatInterval) {
+  if ((millis() - lastHeartbeat) / 1000 >= heartbeatInterval) {
     Serial.println("...Heartbeat...");
     lastHeartbeat = millis();
     client.publish(topic_status, "still alive");
   }
 
   // Save currentPosition to EEPROM, if it's time to do so
-  if ((millis() - lastEEPROMWrite) / 1000 > EEPROMWriteInterval) {
+  if ((millis() - lastEEPROMWrite) / 1000 >= EEPROMWriteInterval) {
 //    Serial.println("...EEPROM save attempt...");
     lastEEPROMWrite = millis();
     currentPosition.save();
